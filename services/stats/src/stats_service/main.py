@@ -1,13 +1,12 @@
 import random
-import statistics
 import time
 
 import psutil
 from datetime import datetime, timezone
-from collections import Counter
 from fastapi import FastAPI, HTTPException, Path, Request, Response
 from pydantic import BaseModel
 from fastapi.responses import JSONResponse
+from stats_service.calc import compute_stats
 from stats_service.db import get_connection, ping
 from stats_service import cache, jobs 
 import redis
@@ -115,42 +114,13 @@ def movie_stats(
                 (movie_id,),
             )
             scores: list[float] = [float(r["score"]) for r in cur.fetchall()]
-            count = len(scores)
-
-            if count == 0:
-                avg = None
-                min_r = None
-                max_r = None
-                median = None
-                std = None
-                distribution: dict[str, int] = {}
-            else:
-                avg = round(statistics.fmean(scores), 2)
-                min_r = min(scores)
-                max_r = max(scores)
-                median = round(statistics.median(scores), 2)
-                if count >= 2:
-                    try:
-                        std = round(statistics.pstdev(scores), 2)
-                    except statistics.StatisticsError:
-                        std = 0.0
-                else:
-                    std = 0.0
-
-                dist_counter = Counter(int(s // 1) for s in scores)
-                distribution = {str(k): v for k, v in sorted(dist_counter.items())}
+            stats = compute_stats(scores)
 
             time.sleep(random.random() * 3)
             result = MovieStatsResponse(
                 movie=movie,
-                rating_count=count,
-                avg_rating=avg,
-                min_rating=min_r,
-                max_rating=max_r,
-                median_rating=median,
-                stddev=std,
-                stddev_rating=std,
-                score_distribution=distribution,
+                stddev=stats["stddev_rating"],
+                **stats,
             )
 
             if cache_ok:
