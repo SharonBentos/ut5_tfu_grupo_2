@@ -5,13 +5,14 @@ Operación: POST /soap/estadisticas  ->  ObtenerEstadisticasPelicula(movieId)
 
 Lee la proyección guardada en movie_stats (pasos 2 y 3) y los datos de movies.
 Faults: PeliculaNoEncontrada (Client), ProyeccionNoInicializada (Server),
-PedidoInvalido (Client).
+BaseNoDisponible (Server), PedidoInvalido (Client).
 """
 
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Request, Response
+import psycopg
 
 from stats_service.db import get_connection
 
@@ -151,6 +152,19 @@ def _parse_movie_id(raw: bytes) -> int:
     return int(node.text.strip())
 
 
+def _buscar_estadisticas(movie_id: int):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT m.id, m.title, m.year, m.director, m.genre, s.movie_id AS stats_id, "
+                "s.rating_count, s.avg_rating, s.min_rating, s.max_rating, s.median_rating, "
+                "s.stddev_rating, s.score_distribution "
+                "FROM movies m LEFT JOIN movie_stats s ON s.movie_id = m.id WHERE m.id = %s",
+                (movie_id,),
+            )
+            return cur.fetchone()
+
+
 @router.get("/soap/estadisticas", include_in_schema=False)
 def wsdl(request: Request):
     location = str(request.url.replace(query=""))
@@ -164,16 +178,15 @@ async def obtener_estadisticas(request: Request):
     except (ET.ParseError, ValueError) as e:
         return _fault("Client", "PedidoInvalido", f"Pedido SOAP inválido: {e}")
 
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT m.id, m.title, m.year, m.director, m.genre, s.movie_id AS stats_id, "
-                "s.rating_count, s.avg_rating, s.min_rating, s.max_rating, s.median_rating, "
-                "s.stddev_rating, s.score_distribution "
-                "FROM movies m LEFT JOIN movie_stats s ON s.movie_id = m.id WHERE m.id = %s",
-                (movie_id,),
-            )
-            row = cur.fetchone()
+    try:
+        row = _buscar_estadisticas(movie_id)
+    except psycopg.OperationalError:
+        return _fault(
+            "Server",
+            "BaseNoDisponible",
+            "Base de datos de estadísticas no disponible",
+            movie_id,
+        )
 
     if row is None:
         return _fault("Client", "PeliculaNoEncontrada", f"Movie {movie_id} not found", movie_id)
