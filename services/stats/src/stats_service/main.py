@@ -9,12 +9,14 @@ from fastapi.responses import JSONResponse
 from stats_service.calc import compute_stats
 from stats_service.db import get_connection, ping
 from stats_service import cache, jobs 
+from stats_service.soap import router as soap_router
 import redis
 
 app = FastAPI(
     title="Stats Service",
     description="Estadísticas agregadas de ratings por película (backend Postgres)",
 )
+app.include_router(soap_router)
 
 _start_time = datetime.now(timezone.utc)
 
