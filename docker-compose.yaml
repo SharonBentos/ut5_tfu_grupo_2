@@ -203,11 +203,11 @@
       - "8080:8080"
     depends_on:
       stats:
-        condition: service_healthy
+        condition: service_started
       reviews:
-        condition: service_healthy
+        condition: service_started
       users:
-        condition: service_healthy
+        condition: service_started
     networks:
       - frontend
       - backend
