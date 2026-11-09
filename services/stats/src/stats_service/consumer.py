@@ -32,6 +32,8 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 CLAIM_IDLE_MS = int(os.getenv("STATS_CLAIM_IDLE_MS", "30000"))
 BLOCK_MS = 5000
 RETRY_SECONDS = 2
+DLQ_STREAM = os.getenv("STATS_DLQ_STREAM", f"{STREAM}.dlq")
+MAX_DELIVERIES = int(os.getenv("STATS_MAX_DELIVERIES", "3"))
 
 log = logging.getLogger("stats.consumer")
 # El timeout del socket tiene que superar al bloqueo de XREADGROUP.
@@ -78,18 +80,47 @@ def apply_event(fields: dict) -> bool:
     return True
 
 
+def send_to_dlq(msg_id: str, fields: dict, reason: str) -> None:
+    """Copia el mensaje a la cola de fallidos y lo confirma en el stream original."""
+    r.xadd(DLQ_STREAM, {**fields, "original_id": msg_id, "error": reason[:500]})
+    r.xack(STREAM, GROUP, msg_id)
+    log.error("%s enviado a %s: %s", msg_id, DLQ_STREAM, reason)
+
+
+def deliveries(msg_id: str) -> int:
+    """Cantidad de veces que Redis entregó el mensaje a este grupo."""
+    info = r.xpending_range(STREAM, GROUP, min=msg_id, max=msg_id, count=1)
+    return info[0]["times_delivered"] if info else 1
+
+
 def handle(msg_id: str, fields: dict) -> None:
-    """Procesa un mensaje y hace XACK. Si falla la base, propaga sin confirmar."""
+    """Procesa un mensaje y hace XACK.
+
+    - Base caída (OperationalError): propaga sin confirmar; se reintenta y NO va a la DLQ.
+    - Evento inválido: reintentar no lo arreglaría, va directo a la DLQ.
+    - Error inesperado: queda pendiente y se reintenta; tras MAX_DELIVERIES entregas va a la DLQ.
+    """
     if fields.get("event_type") != "ReviewCreated":
         log.info("%s ignorado (event_type=%s)", msg_id, fields.get("event_type"))
-    else:
-        try:
-            new = apply_event(fields)
-            log.info("%s rating %s %s", msg_id, fields.get("aggregate_id"),
-                     "aplicado" if new else "duplicado, ignorado")
-        except (InvalidEvent, psycopg.DataError, psycopg.IntegrityError) as e:
-            # Reintentar no lo arreglaría: se descarta para no bloquear el stream.
-            log.error("%s descartado: %s", msg_id, e)
+        r.xack(STREAM, GROUP, msg_id)
+        return
+    try:
+        new = apply_event(fields)
+    except (InvalidEvent, psycopg.DataError, psycopg.IntegrityError) as e:
+        send_to_dlq(msg_id, fields, f"evento inválido: {e}")
+        return
+    except psycopg.OperationalError:
+        raise
+    except Exception as e:
+        n = deliveries(msg_id)
+        if n >= MAX_DELIVERIES:
+            send_to_dlq(msg_id, fields, f"falló en {n} entregas: {e}")
+        else:
+            log.warning("%s falló (entrega %s de %s), queda pendiente: %s",
+                        msg_id, n, MAX_DELIVERIES, e)
+        return
+    log.info("%s rating %s %s", msg_id, fields.get("aggregate_id"),
+             "aplicado" if new else "duplicado, ignorado")
     r.xack(STREAM, GROUP, msg_id)
 
 
