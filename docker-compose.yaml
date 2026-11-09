@@ -104,6 +104,7 @@
     build:
       context: ./services/stats
       dockerfile: Dockerfile
+    scale: 3
     command: ["python", "-m", "stats_service.consumer"]
     restart: unless-stopped
     environment:
@@ -160,6 +161,8 @@
     build:
       context: ./services/reviews
       dockerfile: Dockerfile
+    scale: 3
+    restart: unless-stopped
     command: ["python", "-m", "reviews_service.outbox_relay"]
     environment:
       DATABASE_URL: postgresql://reviews:reviews@reviews-db:5432/reviews
