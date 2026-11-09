@@ -1,17 +1,19 @@
-"""Consumidor de ReseñaCreada desde Redis Streams.
+"""Consumidor de ReviewCreated (ReseñaCreada) desde Redis Streams.
 
 Uso: python -m stats_service.consumer
 
-Contrato del evento (campos planos de la entrada del stream `resenas.events`):
-    type=ReseñaCreada  rating_id=<int>  movie_id=<int>  reviewer_id=<int>  score=<0..10>
+Contrato del evento (lo publica reviews_service.outbox_relay en `resenas.events`):
+    event_type=ReviewCreated  aggregate_id=<rating_id>
+    payload=<JSON con rating_id, movie_id, reviewer_id, score, ...>
 Ejemplo:
-    XADD resenas.events * type ReseñaCreada rating_id 125 movie_id 10 reviewer_id 1 score 8
+    XADD resenas.events * event_type ReviewCreated aggregate_id 125 payload '{"rating_id": 125, "movie_id": 10, "reviewer_id": 1, "score": 8.0}'
 
 Cada mensaje guarda la calificación local y recalcula las estadísticas de la
 película en una sola transacción; recién después del commit se hace XACK.
 Si PostgreSQL falla, el mensaje queda pendiente y se reintenta.
 """
 
+import json
 import logging
 import os
 import socket
@@ -51,11 +53,12 @@ def ensure_group() -> None:
 def apply_event(fields: dict) -> bool:
     """Devuelve True si la reseña era nueva, False si ya estaba aplicada."""
     try:
-        rating_id = int(fields["rating_id"])
-        movie_id = int(fields["movie_id"])
-        reviewer_id = int(fields["reviewer_id"])
-        score = float(fields["score"])
-    except (KeyError, ValueError) as e:
+        data = json.loads(fields["payload"])
+        rating_id = int(data["rating_id"])
+        movie_id = int(data["movie_id"])
+        reviewer_id = int(data["reviewer_id"])
+        score = float(data["score"])
+    except (KeyError, ValueError, TypeError) as e:
         raise InvalidEvent(f"campos inválidos: {e}") from e
 
     with get_connection() as conn:
@@ -77,12 +80,12 @@ def apply_event(fields: dict) -> bool:
 
 def handle(msg_id: str, fields: dict) -> None:
     """Procesa un mensaje y hace XACK. Si falla la base, propaga sin confirmar."""
-    if fields.get("type") != "ReseñaCreada":
-        log.info("%s ignorado (type=%s)", msg_id, fields.get("type"))
+    if fields.get("event_type") != "ReviewCreated":
+        log.info("%s ignorado (event_type=%s)", msg_id, fields.get("event_type"))
     else:
         try:
             new = apply_event(fields)
-            log.info("%s rating %s %s", msg_id, fields.get("rating_id"),
+            log.info("%s rating %s %s", msg_id, fields.get("aggregate_id"),
                      "aplicado" if new else "duplicado, ignorado")
         except (InvalidEvent, psycopg.DataError, psycopg.IntegrityError) as e:
             # Reintentar no lo arreglaría: se descarta para no bloquear el stream.
