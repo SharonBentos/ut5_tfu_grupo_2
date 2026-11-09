@@ -104,7 +104,7 @@ def movie_stats(movie_id: int = Path(..., ge=1, description="ID de la película"
         codigo = fault.findtext("detail/tns:ErrorEstadisticas/tns:codigo", namespaces=NS)
         if codigo == "PeliculaNoEncontrada":
             raise HTTPException(status_code=404, detail=f"Movie {movie_id} not found")
-        if codigo == "ProyeccionNoInicializada":
+        if codigo in ("ProyeccionNoInicializada", "BaseNoDisponible"):
             raise HTTPException(status_code=503, detail=fault.findtext("faultstring"))
         raise HTTPException(status_code=502, detail=fault.findtext("faultstring") or "SOAP Fault")
 
