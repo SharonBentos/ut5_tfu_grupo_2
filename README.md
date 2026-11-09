@@ -39,3 +39,16 @@ Variables principales:
 DATABASE_URL=postgresql://reviews:reviews@reviews-db:5432/reviews
 REDIS_URL=redis://redis:6379/0
 ```
+
+## Servicio de Estadísticas
+
+`docker compose up -d --build` levanta su base propia (`stats-db`, con
+`postgres/stats/init.sql`) y ejecuta una vez `stats-init`
+(`python -m stats_service.init_stats`). `stats`, el servidor SOAP, recién
+arranca cuando ese paso termina bien. `stats-consumer` lee `ReviewCreated` de
+`resenas.events`, y `stats-adapter` traduce SOAP al JSON REST. Redis usa AOF
+con el volumen `redis-data`.
+
+```text
+GET /api/stats/movies/{movie_id}/stats   (gateway -> stats-adapter -> SOAP)
+```

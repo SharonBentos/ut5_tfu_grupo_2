@@ -36,6 +36,9 @@
 
   redis:
     image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
     networks:
       - backend
     healthcheck:
@@ -44,20 +47,86 @@
       timeout: 3s
       retries: 10
 
+  stats-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: stats
+      POSTGRES_PASSWORD: stats
+      POSTGRES_DB: stats
+    volumes:
+      - stats-postgres-data:/var/lib/postgresql/data
+      - ./postgres/stats/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stats -d stats"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  stats-init:
+    build:
+      context: ./services/stats
+      dockerfile: Dockerfile
+    command: ["python", "-m", "stats_service.init_stats"]
+    environment:
+      DATABASE_URL: postgresql://stats:stats@stats-db:5432/stats
+    depends_on:
+      stats-db:
+        condition: service_healthy
+    networks:
+      - backend
+
   stats:
     build:
       context: ./services/stats
       dockerfile: Dockerfile
     scale: 3
     environment:
-      DATABASE_URL: postgresql://movies:movies@postgres:5432/movies
+      DATABASE_URL: postgresql://stats:stats@stats-db:5432/stats
       REDIS_URL: redis://redis:6379/0
     expose:
       - "8000"
     depends_on:
-      postgres:
-        condition: service_healthy
+      stats-init:
+        condition: service_completed_successfully
       redis:
+        condition: service_healthy
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  stats-consumer:
+    build:
+      context: ./services/stats
+      dockerfile: Dockerfile
+    command: ["python", "-m", "stats_service.consumer"]
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://stats:stats@stats-db:5432/stats
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      stats-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    networks:
+      - backend
+
+  stats-adapter:
+    build:
+      context: ./services/stats-adapter
+      dockerfile: Dockerfile
+    environment:
+      STATS_SOAP_URL: http://stats:8000/soap/estadisticas
+    expose:
+      - "8000"
+    depends_on:
+      stats:
         condition: service_healthy
     networks:
       - backend
@@ -159,4 +228,8 @@ volumes:
   postgres-data:
     driver: local
   reviews-postgres-data:
+    driver: local
+  stats-postgres-data:
+    driver: local
+  redis-data:
     driver: local
