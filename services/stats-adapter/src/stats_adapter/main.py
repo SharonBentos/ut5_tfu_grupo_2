@@ -35,35 +35,42 @@ def build_request(movie_id: int) -> str:
     )
 
 
-def _value(parent: ET.Element, name: str, cast):
+def _value(parent: ET.Element, name: str, cast, nillable: bool = False):
+    """Campo obligatorio según el WSDL; solo los nillable admiten xsi:nil."""
     node = parent.find(f"tns:{name}", NS)
-    if node is None or node.get(XSI_NIL) == "true" or node.text is None:
-        return None
-    return cast(node.text)
+    if node is None:
+        raise ValueError(f"falta {name}")
+    if node.get(XSI_NIL) == "true":
+        if nillable:
+            return None
+        raise ValueError(f"{name} no admite nil")
+    return cast(node.text or "")
 
 
 def to_ut4_json(resp: ET.Element) -> dict:
     movie = resp.find("tns:movie", NS)
-    std = _value(resp, "stddevRating", float)
-    entries = resp.findall("tns:scoreDistribution/tns:entry", NS)
+    dist = resp.find("tns:scoreDistribution", NS)
+    if movie is None or dist is None:
+        raise ValueError("falta movie o scoreDistribution")
+    std = _value(resp, "stddevRating", float, nillable=True)
     return {
         "movie": {
             "id": _value(movie, "id", int),
             "title": _value(movie, "title", str),
-            "year": _value(movie, "year", int),
-            "director": _value(movie, "director", str),
-            "genre": _value(movie, "genre", str),
+            "year": _value(movie, "year", int, nillable=True),
+            "director": _value(movie, "director", str, nillable=True),
+            "genre": _value(movie, "genre", str, nillable=True),
         },
         "rating_count": _value(resp, "ratingCount", int),
-        "avg_rating": _value(resp, "avgRating", float),
-        "min_rating": _value(resp, "minRating", float),
-        "max_rating": _value(resp, "maxRating", float),
-        "median_rating": _value(resp, "medianRating", float),
+        "avg_rating": _value(resp, "avgRating", float, nillable=True),
+        "min_rating": _value(resp, "minRating", float, nillable=True),
+        "max_rating": _value(resp, "maxRating", float, nillable=True),
+        "median_rating": _value(resp, "medianRating", float, nillable=True),
         "stddev": std,
         "stddev_rating": std,
         "score_distribution": {
-            e.findtext("tns:score", namespaces=NS): int(e.findtext("tns:count", namespaces=NS))
-            for e in entries
+            str(_value(e, "score", int)): _value(e, "count", int)
+            for e in dist.findall("tns:entry", NS)
         },
     }
 
@@ -104,4 +111,7 @@ def movie_stats(movie_id: int = Path(..., ge=1, description="ID de la película"
     resp = body.find("tns:ObtenerEstadisticasPeliculaResponse", NS) if body is not None else None
     if resp is None:
         raise HTTPException(status_code=502, detail="Respuesta SOAP inválida")
-    return to_ut4_json(resp)
+    try:
+        return to_ut4_json(resp)
+    except ValueError as e:
+        raise HTTPException(status_code=502, detail=f"Respuesta SOAP incompleta o inválida: {e}")
