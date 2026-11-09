@@ -11,6 +11,8 @@ from reviews_service.db import get_connection
 LOGGER = logging.getLogger(__name__)
 STREAM_NAME = "resenas.events"
 POLL_INTERVAL_SECONDS = 2
+INITIAL_RETRY_SECONDS = 2
+MAX_RETRY_SECONDS = 30
 
 
 def publish_pending_event(redis_client: redis.Redis) -> bool:
@@ -53,14 +55,22 @@ def run() -> None:
     logging.basicConfig(level=logging.INFO)
     redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
     redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
+    retry_delay = INITIAL_RETRY_SECONDS
 
     while True:
         try:
-            if not publish_pending_event(redis_client):
+            published = publish_pending_event(redis_client)
+            retry_delay = INITIAL_RETRY_SECONDS
+            if not published:
                 time.sleep(POLL_INTERVAL_SECONDS)
-        except (psycopg.Error, redis.RedisError):
-            LOGGER.exception("Outbox relay failed; event will be retried")
-            time.sleep(POLL_INTERVAL_SECONDS)
+        except (psycopg.Error, redis.RedisError) as e:
+            LOGGER.warning(
+                "Outbox relay falló; reintento en %s s: %s",
+                retry_delay,
+                e,
+            )
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, MAX_RETRY_SECONDS)
 
 
 if __name__ == "__main__":
