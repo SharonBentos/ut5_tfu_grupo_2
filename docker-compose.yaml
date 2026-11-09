@@ -195,6 +195,24 @@
       timeout: 3s
       retries: 3
 
+  users-consumer:
+    build:
+      context: ./services/users
+      dockerfile: Dockerfile
+    scale: 3
+    command: ["python", "-m", "users_service.consumer"]
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://movies:movies@postgres:5432/movies
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - backend
+
   gateway:
     build:
       context: ./gateway
