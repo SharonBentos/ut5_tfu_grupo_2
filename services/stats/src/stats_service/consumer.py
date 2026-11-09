@@ -99,10 +99,13 @@ def process(messages) -> None:
 
 
 def run() -> None:
-    ensure_group()
     log.info("consumidor %s escuchando %s (grupo %s)", CONSUMER, STREAM, GROUP)
+    need_group = True
     while True:
         try:
+            if need_group:
+                ensure_group()
+                need_group = False
             # 1) Pendientes propios (mensajes que fallaron antes).
             _, pending = r.xreadgroup(GROUP, CONSUMER, {STREAM: "0"}, count=50)[0]
             process(pending)
@@ -115,6 +118,15 @@ def run() -> None:
         except psycopg.OperationalError as e:
             log.warning("PostgreSQL no disponible, queda pendiente: %s", e)
             time.sleep(RETRY_SECONDS)
+        except redis.ResponseError as e:
+            if "NOGROUP" in str(e):
+                # El grupo desapareció (p. ej. Redis sin persistencia): se recrea
+                # desde "0"; lo ya aplicado se descarta por rating_id.
+                log.warning("grupo %s inexistente, se recrea: %s", GROUP, e)
+                need_group = True
+            else:
+                log.warning("Error de Redis: %s", e)
+                time.sleep(RETRY_SECONDS)
         except redis.RedisError as e:
             log.warning("Redis no disponible: %s", e)
             time.sleep(RETRY_SECONDS)
