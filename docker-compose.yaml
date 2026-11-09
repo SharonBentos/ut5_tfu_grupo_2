@@ -1,4 +1,4 @@
-services:
+﻿services:
   postgres:
     image: postgres:16-alpine
     environment:
@@ -16,6 +16,24 @@ services:
       timeout: 3s
       retries: 10
   
+  reviews-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: reviews
+      POSTGRES_PASSWORD: reviews
+      POSTGRES_DB: reviews
+    volumes:
+      - reviews-postgres-data:/var/lib/postgresql/data
+      - ./postgres/reviews/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reviews -d reviews"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+
   redis:
     image: redis:7-alpine
     networks:
@@ -55,11 +73,11 @@ services:
       dockerfile: Dockerfile
     scale: 3
     environment:
-      DATABASE_URL: postgresql://movies:movies@postgres:5432/movies
+      DATABASE_URL: postgresql://reviews:reviews@reviews-db:5432/reviews
     expose:
       - "8000"
     depends_on:
-      postgres:
+      reviews-db:
         condition: service_healthy
     networks:
       - backend
@@ -68,6 +86,22 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
+
+  reviews-relay:
+    build:
+      context: ./services/reviews
+      dockerfile: Dockerfile
+    command: ["python", "-m", "reviews_service.outbox_relay"]
+    environment:
+      DATABASE_URL: postgresql://reviews:reviews@reviews-db:5432/reviews
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      reviews-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - backend
 
   users:
     build:
@@ -123,4 +157,6 @@ networks:
 
 volumes:
   postgres-data:
+    driver: local
+  reviews-postgres-data:
     driver: local

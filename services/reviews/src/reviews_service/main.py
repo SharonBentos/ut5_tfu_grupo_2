@@ -1,7 +1,10 @@
+import json
 import psutil
+import os
+import redis
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Path
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse
 from reviews_service.db import get_connection, ping
 
@@ -19,6 +22,7 @@ class HealthResponse(BaseModel):
     timestamp: str
     uptime: float
     db: str
+    redis: str
 
 
 class Review(BaseModel):
@@ -39,6 +43,11 @@ class MovieReview(BaseModel):
     score: float
     comment: str | None = None
     created_at: str
+
+class ReviewCreate(BaseModel):
+    reviewer_id: int
+    score: float = Field(..., ge=0, le=10)
+    comment: str | None = None
 
 
 def _to_str(value) -> str:
@@ -111,17 +120,108 @@ async def root():
 def health():
     uptime = (datetime.now(timezone.utc) - _start_time).total_seconds()
     db_ok = ping()
+    redis_client = redis.Redis.from_url(
+        os.getenv("REDIS_URL", "redis://redis:6379/0")
+    )
+    try:
+        redis_client.ping()
+        redis_status = "ok"
+    except redis.RedisError:
+        redis_status = "down"
     body = HealthResponse(
         status="ok" if db_ok else "down",
         timestamp=datetime.now(timezone.utc).isoformat(),
         cpu_percent=psutil.cpu_percent(),
         uptime=uptime,
         db="ok" if db_ok else "down",
+        redis=redis_status,
     )
     if not db_ok:
         return JSONResponse(status_code=503, content=body.model_dump())
     return body
 
+@app.post(
+    "/movies/{movie_id}/reviews",
+    status_code=201,
+)
+async def create_review(
+    movie_id: int,
+    review: ReviewCreate,
+):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM movies WHERE id = %s", (movie_id,))
+            if cur.fetchone() is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Movie {movie_id} not found",
+            )
+            cur.execute(
+                "SELECT 1 FROM reviewers WHERE id = %s",
+                (review.reviewer_id,),
+            )
+            if cur.fetchone() is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"User {review.reviewer_id} not found",
+                )
+            cur.execute(
+                """
+                SELECT 1
+                FROM ratings
+                WHERE movie_id = %s AND reviewer_id = %s
+                """,
+                (movie_id, review.reviewer_id),
+            )
+            if cur.fetchone() is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="User already reviewed this movie",
+                )
+            cur.execute(
+                """
+                INSERT INTO ratings (movie_id, reviewer_id, score, comment)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id, created_at
+                """,
+                (
+                    movie_id,
+                    review.reviewer_id,
+                    review.score,
+                    review.comment,
+                ),
+            )
+            created = cur.fetchone()
+
+            event_payload = {
+                "rating_id": created["id"],
+                "movie_id": movie_id,
+                "reviewer_id": review.reviewer_id,
+                "score": review.score,
+                "comment": review.comment,
+                "created_at": created["created_at"].isoformat(),
+            }
+
+            cur.execute(
+                """
+                INSERT INTO outbox (event_type, aggregate_id, payload)
+                VALUES (%s, %s, %s::jsonb)
+                """,
+                (
+                    "ReviewCreated",
+                    created["id"],
+                    json.dumps(event_payload),
+                ),
+            )
+
+            return {
+                "id": created["id"],
+                "movie_id": movie_id,
+                "reviewer_id": review.reviewer_id,
+                "score": review.score,
+                "comment": review.comment,
+                "created_at": created["created_at"].isoformat(),
+            }
 
 @app.get(
     "/movies/{movie_id}/reviews",
