@@ -167,7 +167,10 @@ def _buscar_estadisticas(movie_id: int):
 
 @router.get("/soap/estadisticas", include_in_schema=False)
 def wsdl(request: Request):
-    location = str(request.url.replace(query=""))
+    scheme = request.headers.get("X-Forwarded-Proto", request.url.scheme)
+    host = request.headers.get("X-Forwarded-Host", request.url.netloc)
+    prefix = request.headers.get("X-Forwarded-Prefix", "")
+    location = f"{scheme}://{host}{prefix}/soap/estadisticas"
     return Response(WSDL.replace("{location}", escape(location)), media_type=XML_TYPE)
 
 
