@@ -133,8 +133,6 @@
     ports:
       - "8080:8080"
     depends_on:
-      stats:
-        condition: service_healthy
       reviews:
         condition: service_healthy
       users:
